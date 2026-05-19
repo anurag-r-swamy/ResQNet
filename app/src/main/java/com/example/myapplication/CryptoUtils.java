@@ -2,30 +2,57 @@ package com.example.myapplication;
 
 import android.util.Base64;
 import android.util.Log;
-import javax.crypto.Cipher;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
+
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 public class CryptoUtils {
-    private static final String ALGORITHM = "AES/CBC/PKCS5Padding";
-    // 32-byte key for AES-256
-    private static final String AES_KEY = "12345678901234567890123456789012"; 
-    private static final String AES_IV = "1234567890123456";
+    private static final String TAG = "CryptoUtils";
+    private static final String TRANSFORMATION = "AES/GCM/NoPadding";
+    private static final String PAYLOAD_PREFIX = "v2";
+    private static final int GCM_TAG_LENGTH_BITS = 128;
+    private static final String DEFAULT_SHARED_SECRET = "change-this-mesh-secret";
+
+    private static String resolveSharedSecret() {
+        try {
+            Class<?> buildConfigClass = Class.forName("com.example.myapplication.BuildConfig");
+            Object value = buildConfigClass.getField("MESH_SHARED_SECRET").get(null);
+            if (value instanceof String) {
+                String secret = (String) value;
+                if (!secret.trim().isEmpty()) {
+                    return secret;
+                }
+            }
+        } catch (Exception ignored) {
+            // Fall back to default when BuildConfig is unavailable in IDE/source analysis.
+        }
+        return DEFAULT_SHARED_SECRET;
+    }
+
+    private static SecretKey getSharedSecretKey() throws Exception {
+        byte[] keyBytes = MessageDigest.getInstance("SHA-256")
+                .digest(resolveSharedSecret().getBytes(StandardCharsets.UTF_8));
+        return new SecretKeySpec(keyBytes, "AES");
+    }
 
     public static String encrypt(String value) {
         if (value == null) return null;
         try {
-            IvParameterSpec iv = new IvParameterSpec(AES_IV.getBytes(StandardCharsets.UTF_8));
-            SecretKeySpec skeySpec = new SecretKeySpec(AES_KEY.getBytes(StandardCharsets.UTF_8), "AES");
-
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.ENCRYPT_MODE, skeySpec, iv);
-
+            Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+            cipher.init(Cipher.ENCRYPT_MODE, getSharedSecretKey());
             byte[] encrypted = cipher.doFinal(value.getBytes(StandardCharsets.UTF_8));
-            return Base64.encodeToString(encrypted, Base64.NO_WRAP);
+            byte[] iv = cipher.getIV();
+
+            String encodedIv = Base64.encodeToString(iv, Base64.NO_WRAP);
+            String encodedCiphertext = Base64.encodeToString(encrypted, Base64.NO_WRAP);
+            return PAYLOAD_PREFIX + ":" + encodedIv + ":" + encodedCiphertext;
         } catch (Exception ex) {
-            Log.e("CryptoUtils", "Encryption failed: " + ex.getMessage());
+            Log.e(TAG, "Encryption failed", ex);
         }
         return null;
     }
@@ -33,16 +60,22 @@ public class CryptoUtils {
     public static String decrypt(String encrypted) {
         if (encrypted == null || encrypted.isEmpty()) return null;
         try {
-            IvParameterSpec iv = new IvParameterSpec(AES_IV.getBytes(StandardCharsets.UTF_8));
-            SecretKeySpec skeySpec = new SecretKeySpec(AES_KEY.getBytes(StandardCharsets.UTF_8), "AES");
+            String[] parts = encrypted.split(":", 3);
+            if (parts.length != 3 || !PAYLOAD_PREFIX.equals(parts[0])) {
+                return null;
+            }
 
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.DECRYPT_MODE, skeySpec, iv);
+            byte[] iv = Base64.decode(parts[1], Base64.NO_WRAP);
+            byte[] ciphertext = Base64.decode(parts[2], Base64.NO_WRAP);
 
-            byte[] original = cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP));
+            Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
+            cipher.init(Cipher.DECRYPT_MODE, getSharedSecretKey(), gcmSpec);
+
+            byte[] original = cipher.doFinal(ciphertext);
             return new String(original, StandardCharsets.UTF_8);
         } catch (Exception ex) {
-            Log.e("CryptoUtils", "Decryption failed: " + ex.getMessage());
+            Log.e(TAG, "Decryption failed", ex);
         }
         return null;
     }

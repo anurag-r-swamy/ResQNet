@@ -25,6 +25,7 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
 
 import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.gms.common.api.ApiException;
 import com.google.android.gms.nearby.Nearby;
 import com.google.android.gms.nearby.connection.AdvertisingOptions;
 import com.google.android.gms.nearby.connection.ConnectionInfo;
@@ -44,16 +45,21 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import android.os.Handler;
+import android.os.Looper;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MeshApp";
-    private static final String SERVICE_ID = "com.example.myapplication.MESH_SERVICE";
+    // Nearby service ID must be a valid package-style identifier.
+    private static final String SERVICE_ID = "com.example.myapplication";
     private static final Strategy STRATEGY = Strategy.P2P_CLUSTER;
+    private static final int MAX_SEEN_MESSAGE_IDS = 5000;
 
     private static MainActivity instance;
 
@@ -62,7 +68,12 @@ public class MainActivity extends AppCompatActivity {
     
     private final Set<String> connectedEndpoints = Collections.synchronizedSet(new HashSet<>());
     private final Map<String, String> endpointIdToNodeMap = new ConcurrentHashMap<>();
-    private final Set<String> seenMessageIds = Collections.synchronizedSet(new HashSet<>());
+    private final Set<String> seenMessageIds = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final Set<String> pendingConnectionRequests = Collections.synchronizedSet(new HashSet<>());
+    private final Map<String, String> discoveredEndpointNames = new ConcurrentHashMap<>();
+    private final Map<String, Integer> connectionRetryCounts = new ConcurrentHashMap<>();
+    private static final int MAX_CONN_RETRIES = 3;
+    private static final long INITIAL_RETRY_DELAY_MS = 1000L; // 1s
     
     private final Map<String, List<Message>> chatHistory = new ConcurrentHashMap<>();
     private final List<String> discoveredNodeNames = Collections.synchronizedList(new ArrayList<>());
@@ -167,6 +178,46 @@ public class MainActivity extends AppCompatActivity {
         return names;
     }
 
+    public void connectToNodeByName(String nodeName) {
+        if (nodeName == null || nodeName.trim().isEmpty()) {
+            Toast.makeText(this, "Invalid node", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String endpointId = null;
+        for (Map.Entry<String, String> entry : discoveredEndpointNames.entrySet()) {
+            if (nodeName.equals(entry.getValue())) {
+                endpointId = entry.getKey();
+                break;
+            }
+        }
+
+        if (endpointId == null) {
+            Toast.makeText(this, "Node not available", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (connectedEndpoints.contains(endpointId)) {
+            Toast.makeText(this, "Already connected to " + nodeName, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (pendingConnectionRequests.contains(endpointId)) {
+            Toast.makeText(this, "Connecting to " + nodeName + "...", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final String finalEndpointId = endpointId;
+        pendingConnectionRequests.add(finalEndpointId);
+        Nearby.getConnectionsClient(this).requestConnection(myShortId, finalEndpointId, connectionLifecycleCallback)
+                .addOnSuccessListener(unused -> runOnUiThread(() -> Toast.makeText(this, "Connection requested: " + nodeName, Toast.LENGTH_SHORT).show()))
+                .addOnFailureListener(e -> {
+                    pendingConnectionRequests.remove(finalEndpointId);
+                    Log.e(TAG, "Manual connection request failed to " + finalEndpointId, e);
+                    runOnUiThread(() -> Toast.makeText(this, "Failed to connect: " + nodeName, Toast.LENGTH_SHORT).show());
+                });
+    }
+
     public List<Message> getMessagesForNode(String nodeId) {
         List<Message> history = chatHistory.get(nodeId);
         if (history == null) return new ArrayList<>();
@@ -189,6 +240,22 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         return true;
+    }
+
+    private boolean isMessageSeen(String msgId) {
+        synchronized (seenMessageIds) {
+            return seenMessageIds.contains(msgId);
+        }
+    }
+
+    private void markMessageSeen(String msgId) {
+        synchronized (seenMessageIds) {
+            seenMessageIds.add(msgId);
+            if (seenMessageIds.size() > MAX_SEEN_MESSAGE_IDS) {
+                String oldest = seenMessageIds.iterator().next();
+                seenMessageIds.remove(oldest);
+            }
+        }
     }
 
     @Override
@@ -222,12 +289,30 @@ public class MainActivity extends AppCompatActivity {
         AdvertisingOptions advOptions = new AdvertisingOptions.Builder().setStrategy(STRATEGY).build();
         Nearby.getConnectionsClient(this).startAdvertising(myShortId, SERVICE_ID, connectionLifecycleCallback, advOptions)
                 .addOnSuccessListener(unused -> updateStatus("Active (" + myShortId + ")"))
-                .addOnFailureListener(e -> updateStatus("Adv Failed"));
+                .addOnFailureListener(e -> {
+                    String details = getNearbyFailureDetails(e);
+                    Log.e(TAG, "Advertising failed: " + details, e);
+                    updateStatus("Adv Failed: " + details);
+                    runOnUiThread(() -> Toast.makeText(this, "Advertising failed: " + details, Toast.LENGTH_LONG).show());
+                });
 
         DiscoveryOptions discOptions = new DiscoveryOptions.Builder().setStrategy(STRATEGY).build();
         Nearby.getConnectionsClient(this).startDiscovery(SERVICE_ID, endpointDiscoveryCallback, discOptions)
                 .addOnSuccessListener(unused -> Log.d(TAG, "Discovery started"))
-                .addOnFailureListener(e -> Log.e(TAG, "Discovery failed", e));
+                .addOnFailureListener(e -> {
+                    String details = getNearbyFailureDetails(e);
+                    Log.e(TAG, "Discovery failed: " + details, e);
+                    runOnUiThread(() -> Toast.makeText(this, "Discovery failed: " + details, Toast.LENGTH_LONG).show());
+                });
+    }
+
+    private String getNearbyFailureDetails(Exception e) {
+        if (e instanceof ApiException) {
+            ApiException apiException = (ApiException) e;
+            return "code=" + apiException.getStatusCode();
+        }
+        String message = e.getMessage();
+        return message != null ? message : "unknown";
     }
 
     private void stopNearby() {
@@ -245,6 +330,8 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onConnectionInitiated(@NonNull String endpointId, @NonNull ConnectionInfo info) {
             endpointIdToNodeMap.put(endpointId, info.getEndpointName());
+            // If we had a pending request for this endpoint, clear it
+            pendingConnectionRequests.remove(endpointId);
             Nearby.getConnectionsClient(MainActivity.this).acceptConnection(endpointId, payloadCallback);
         }
 
@@ -253,6 +340,8 @@ public class MainActivity extends AppCompatActivity {
             if (result.getStatus().isSuccess()) {
                 Log.d(TAG, "Connected to " + endpointId);
                 connectedEndpoints.add(endpointId);
+                String name = endpointIdToNodeMap.get(endpointId);
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Connected: " + (name != null ? name : endpointId), Toast.LENGTH_SHORT).show());
                 notifyFragmentsDataChanged();
             } else {
                 Log.w(TAG, "Connection failed: " + result.getStatus().getStatusMessage());
@@ -263,8 +352,9 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onDisconnected(@NonNull String endpointId) {
             Log.d(TAG, "Disconnected from " + endpointId);
-            endpointIdToNodeMap.remove(endpointId);
+            String name = endpointIdToNodeMap.remove(endpointId);
             connectedEndpoints.remove(endpointId);
+            runOnUiThread(() -> Toast.makeText(MainActivity.this, "Disconnected: " + (name != null ? name : endpointId), Toast.LENGTH_SHORT).show());
             notifyFragmentsDataChanged();
         }
     };
@@ -272,16 +362,78 @@ public class MainActivity extends AppCompatActivity {
     private final EndpointDiscoveryCallback endpointDiscoveryCallback = new EndpointDiscoveryCallback() {
         @Override
         public void onEndpointFound(@NonNull String endpointId, @NonNull DiscoveredEndpointInfo info) {
-            Log.d(TAG, "Endpoint found: " + info.getEndpointName());
-            if (!discoveredNodeNames.contains(info.getEndpointName())) {
-                discoveredNodeNames.add(info.getEndpointName());
+            String remoteName = info.getEndpointName();
+            Log.d(TAG, "Endpoint found: " + remoteName + " (" + endpointId + ")");
+
+            // Record discovered endpoint id -> name so we can remove it if lost
+            if (remoteName != null) {
+                discoveredEndpointNames.put(endpointId, remoteName);
+            }
+
+            // Ignore endpoints that advertise our own name
+            if (remoteName != null && remoteName.equalsIgnoreCase(myShortId)) {
+                Log.d(TAG, "Ignoring discovered endpoint that matches our own name: " + endpointId);
+                return;
+            }
+
+            if (remoteName != null && !discoveredNodeNames.contains(remoteName)) {
+                discoveredNodeNames.add(remoteName);
                 notifyFragmentsDataChanged();
             }
-            Nearby.getConnectionsClient(MainActivity.this).requestConnection(myShortId, endpointId, connectionLifecycleCallback);
+
+            // Avoid duplicate or concurrent requests
+            if (connectedEndpoints.contains(endpointId) || pendingConnectionRequests.contains(endpointId)) {
+                Log.d(TAG, "Already connected or pending: " + endpointId);
+                return;
+            }
+
+            pendingConnectionRequests.add(endpointId);
+            Nearby.getConnectionsClient(MainActivity.this).requestConnection(myShortId, endpointId, connectionLifecycleCallback)
+                    .addOnSuccessListener(unused -> {
+                        Log.d(TAG, "Connection request sent to " + endpointId);
+                    })
+                    .addOnFailureListener(e -> {
+                        Log.e(TAG, "Connection request failed to " + endpointId, e);
+                        pendingConnectionRequests.remove(endpointId);
+                        // schedule retry with exponential backoff
+                        int tries = connectionRetryCounts.getOrDefault(endpointId, 0);
+                        if (tries < MAX_CONN_RETRIES) {
+                            connectionRetryCounts.put(endpointId, tries + 1);
+                            long delay = INITIAL_RETRY_DELAY_MS * (1L << tries);
+                            Log.d(TAG, "Scheduling retry #" + (tries + 1) + " for " + endpointId + " in " + delay + "ms");
+                            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                                // ensure we don't duplicate pending requests
+                                if (!connectedEndpoints.contains(endpointId) && !pendingConnectionRequests.contains(endpointId)) {
+                                    pendingConnectionRequests.add(endpointId);
+                                    Nearby.getConnectionsClient(MainActivity.this).requestConnection(myShortId, endpointId, connectionLifecycleCallback)
+                                            .addOnSuccessListener(u -> Log.d(TAG, "Retry connection request sent to " + endpointId))
+                                            .addOnFailureListener(err -> {
+                                                Log.e(TAG, "Retry failed for " + endpointId, err);
+                                                pendingConnectionRequests.remove(endpointId);
+                                            });
+                                }
+                            }, delay);
+                        } else {
+                            Log.w(TAG, "Max retries reached for " + endpointId);
+                            connectionRetryCounts.remove(endpointId);
+                        }
+                    });
         }
 
         @Override
-        public void onEndpointLost(@NonNull String endpointId) {}
+        public void onEndpointLost(@NonNull String endpointId) {
+            // Remove discovery state for this endpoint id
+            String name = discoveredEndpointNames.remove(endpointId);
+            if (name != null) {
+                discoveredNodeNames.remove(name);
+                notifyFragmentsDataChanged();
+                Log.d(TAG, "Endpoint lost: " + name + " (" + endpointId + ")");
+            } else {
+                Log.d(TAG, "Endpoint lost (unknown name): " + endpointId);
+            }
+            // Also clear pending requests if any
+            pendingConnectionRequests.remove(endpointId);
+        }
     };
 
     private final PayloadCallback payloadCallback = new PayloadCallback() {
@@ -305,14 +457,18 @@ public class MainActivity extends AppCompatActivity {
         }
         try {
             String msgId = UUID.randomUUID().toString();
-            seenMessageIds.add(msgId);
+            markMessageSeen(msgId);
             
             JSONObject json = new JSONObject();
             json.put("msgId", msgId);
             json.put("sender", myShortId);
             json.put("target", targetId);
             String encryptedBody = CryptoUtils.encrypt(message);
-            json.put("body", encryptedBody != null ? encryptedBody : "");
+            if (encryptedBody == null) {
+                Toast.makeText(this, "Message encryption failed", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            json.put("body", encryptedBody);
 
             broadcastToNeighbors(json.toString(), null);
             addMessageToHistory(targetId, new Message(myShortId, message, true));
@@ -325,8 +481,8 @@ public class MainActivity extends AppCompatActivity {
         try {
             JSONObject json = new JSONObject(data);
             String msgId = json.getString("msgId");
-            if (seenMessageIds.contains(msgId)) return;
-            seenMessageIds.add(msgId);
+            if (isMessageSeen(msgId)) return;
+            markMessageSeen(msgId);
 
             String sender = json.getString("sender");
             String target = json.getString("target");
@@ -336,7 +492,6 @@ public class MainActivity extends AppCompatActivity {
                 String clearText = CryptoUtils.decrypt(body);
                 if (clearText != null) {
                     addMessageToHistory(sender, new Message(sender, clearText, false));
-                    runOnUiThread(() -> Toast.makeText(this, "New message from " + sender, Toast.LENGTH_SHORT).show());
                 }
             }
             broadcastToNeighbors(data, fromEndpointId);
@@ -346,11 +501,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void addMessageToHistory(String nodeId, Message message) {
-        List<Message> history = chatHistory.get(nodeId);
-        if (history == null) {
-            history = Collections.synchronizedList(new ArrayList<>());
-            chatHistory.put(nodeId, history);
-        }
+        List<Message> history = chatHistory.computeIfAbsent(nodeId, key -> Collections.synchronizedList(new ArrayList<>()));
         history.add(message);
         
         final List<Message> historySnapshot;
@@ -381,8 +532,19 @@ public class MainActivity extends AppCompatActivity {
         if (excludeId != null) targets.remove(excludeId);
         
         if (!targets.isEmpty()) {
+            Log.d(TAG, "Broadcasting payload to " + targets.size() + " endpoints: " + targets);
             Nearby.getConnectionsClient(this).sendPayload(targets, Payload.fromBytes(data.getBytes(StandardCharsets.UTF_8)))
-                .addOnFailureListener(e -> Log.e(TAG, "Payload broadcast failed", e));
+                .addOnSuccessListener(unused -> {
+                    Log.d(TAG, "Payload broadcast succeeded to " + targets.size() + " endpoints");
+                    runOnUiThread(() -> updateStatus("Sent to " + targets.size() + " peers"));
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "Payload broadcast failed", e);
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "Message send failed", Toast.LENGTH_SHORT).show();
+                        updateStatus("Send Failed");
+                    });
+                });
         }
     }
 

@@ -33,10 +33,10 @@ public class DiscoveryFragment extends Fragment {
             discoveredNodes = activity.getDiscoveredNodeNames();
         }
 
-        // Updated listener to use getActivity() directly for reliability
+        // In Discovery, tapping a node should initiate connection first.
         adapter = new NodeAdapter(discoveredNodes, nodeId -> {
             if (getActivity() instanceof MainActivity) {
-                ((MainActivity) getActivity()).openIndividualChat(nodeId);
+                ((MainActivity) getActivity()).connectToNodeByName(nodeId);
             }
         });
         

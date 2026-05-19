@@ -3,6 +3,7 @@ package com.example.myapplication;
 import android.os.Bundle;
 import android.widget.EditText;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.WindowCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import com.google.android.material.appbar.MaterialToolbar;
@@ -34,6 +35,8 @@ public class ChatActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Keep chat content below status bar/cutout area.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
         setContentView(R.layout.fragment_individual_chat);
         instance = this;
         active = true;
@@ -74,7 +77,10 @@ public class ChatActivity extends AppCompatActivity {
             this.messages.addAll(newMessages);
             if (adapter != null) {
                 adapter.notifyDataSetChanged();
-                recyclerView.scrollToPosition(messages.size() - 1);
+                // Avoid invalid position when the conversation is still empty.
+                if (!messages.isEmpty()) {
+                    recyclerView.scrollToPosition(messages.size() - 1);
+                }
             }
         });
     }

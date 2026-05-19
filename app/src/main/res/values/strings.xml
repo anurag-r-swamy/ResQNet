@@ -14,6 +14,7 @@
     <string name="no_chats_message">No connected nodes yet.\nGo to Discovery to find neighbors.</string>
     <string name="type_message_hint">Type a message...</string>
     <string name="chat_with">Chat with %1$s</string>
+    <string name="send_message">Send message</string>
     <string name="node_name_placeholder">Node ID</string>
     <string name="node_status_tap_to_connect">Tap to connect</string>
     <string name="nearby_mesh_label">Nearby ResQNet Nodes</string>

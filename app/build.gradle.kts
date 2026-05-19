@@ -2,9 +2,16 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+val meshSharedSecret = (project.findProperty("MESH_SHARED_SECRET") as String?)
+    ?: "change-this-mesh-secret"
+
 android {
     namespace = "com.example.myapplication"
     compileSdk = 36
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.example.myapplication"
@@ -12,6 +19,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "MESH_SHARED_SECRET", "\"$meshSharedSecret\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
