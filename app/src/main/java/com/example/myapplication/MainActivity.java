@@ -4,6 +4,7 @@ import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.os.Build;
@@ -52,6 +53,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String SERVICE_ID = "com.example.myapplication.MESH_SERVICE";
     private static final Strategy STRATEGY = Strategy.P2P_CLUSTER;
 
+    private static MainActivity instance;
+
     private String myShortId;
     private String currentStatus = "Idle";
     
@@ -81,9 +84,14 @@ public class MainActivity extends AppCompatActivity {
         REQUIRED_PERMISSIONS = permissions.toArray(new String[0]);
     }
 
+    public static MainActivity getInstance() {
+        return instance;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this;
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
 
@@ -133,8 +141,18 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (instance == this) instance = null;
+    }
+
     public String getMyShortId() { return myShortId; }
     public String getStatus() { return currentStatus; }
+
+    public List<String> getDiscoveredNodeNames() {
+        return new ArrayList<>(discoveredNodeNames);
+    }
 
     public List<String> getConnectedNodeNames() {
         List<String> names = new ArrayList<>();
@@ -150,11 +168,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void openIndividualChat(String nodeId) {
-        getSupportFragmentManager().beginTransaction()
-                .setCustomAnimations(R.anim.slide_in_right, R.anim.slide_out_left, R.anim.slide_in_left, R.anim.slide_out_right)
-                .replace(R.id.fragment_container, IndividualChatFragment.newInstance(nodeId))
-                .addToBackStack(null)
-                .commit();
+        Intent intent = new Intent(this, ChatActivity.class);
+        intent.putExtra("node_id", nodeId);
+        startActivity(intent);
+        overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
     }
 
     private boolean hasPermissions() {
@@ -312,12 +329,15 @@ public class MainActivity extends AppCompatActivity {
         }
         
         runOnUiThread(() -> {
+            // Check if current activity is ChatActivity
+            if (ChatActivity.isActive() && ChatActivity.getCurrentNodeId().equals(nodeId)) {
+                ChatActivity.getInstance().updateMessages(chatHistory.get(nodeId));
+            }
+            
+            // Still check fragments if any
             Fragment current = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
-            if (current instanceof IndividualChatFragment) {
-                IndividualChatFragment chatFrag = (IndividualChatFragment) current;
-                if (chatFrag.getTargetNodeId().equals(nodeId)) {
-                    chatFrag.updateMessages(chatHistory.get(nodeId));
-                }
+            if (current instanceof ChatListFragment) {
+                ((ChatListFragment) current).updateConnectedNodes(getConnectedNodeNames());
             }
         });
     }

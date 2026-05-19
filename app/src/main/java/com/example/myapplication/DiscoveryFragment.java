@@ -28,23 +28,31 @@ public class DiscoveryFragment extends Fragment {
         
         MainActivity activity = (MainActivity) getActivity();
         if (activity != null) {
-            nodeIdText.setText("My Node ID: " + activity.getMyShortId());
+            nodeIdText.setText(getString(R.string.node_id_label, activity.getMyShortId()));
             statusText.setText(activity.getStatus());
+            discoveredNodes = activity.getDiscoveredNodeNames();
         }
 
+        // Updated listener to use getActivity() directly for reliability
         adapter = new NodeAdapter(discoveredNodes, nodeId -> {
-            // In this mesh app, discovery usually leads to auto-connection logic 
-            // but we can trigger a manual connect if needed.
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).openIndividualChat(nodeId);
+            }
         });
+        
         recyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
         recyclerView.setAdapter(adapter);
 
         view.findViewById(R.id.btn_connect).setOnClickListener(v -> {
-            if (activity != null) activity.startNearby();
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).startNearby();
+            }
         });
 
         view.findViewById(R.id.btn_refresh).setOnClickListener(v -> {
-            if (activity != null) activity.refreshNearby();
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).refreshNearby();
+            }
         });
 
         return view;
@@ -55,7 +63,9 @@ public class DiscoveryFragment extends Fragment {
     }
 
     public void updateDiscoveredNodes(List<String> nodes) {
-        discoveredNodes = nodes;
-        if (adapter != null) adapter.updateData(nodes);
+        this.discoveredNodes = nodes;
+        if (adapter != null) {
+            adapter.updateData(nodes);
+        }
     }
 }

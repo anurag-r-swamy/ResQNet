@@ -4,7 +4,6 @@ import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
@@ -15,7 +14,7 @@ import java.util.List;
 
 public class ChatListFragment extends Fragment {
     private NodeAdapter adapter;
-    private TextView emptyView;
+    private View emptyView;
     private List<String> connectedNodes = new ArrayList<>();
 
     @Nullable
@@ -26,9 +25,8 @@ public class ChatListFragment extends Fragment {
         emptyView = view.findViewById(R.id.empty_view);
 
         adapter = new NodeAdapter(connectedNodes, nodeId -> {
-            MainActivity activity = (MainActivity) getActivity();
-            if (activity != null) {
-                activity.openIndividualChat(nodeId);
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).openIndividualChat(nodeId);
             }
         });
 
@@ -44,10 +42,12 @@ public class ChatListFragment extends Fragment {
     }
 
     public void updateConnectedNodes(List<String> nodes) {
-        connectedNodes = nodes;
+        this.connectedNodes = nodes;
         if (adapter != null) {
             adapter.updateData(nodes);
-            emptyView.setVisibility(nodes.isEmpty() ? View.VISIBLE : View.GONE);
+            if (emptyView != null) {
+                emptyView.setVisibility(nodes.isEmpty() ? View.VISIBLE : View.GONE);
+            }
         }
     }
 }
