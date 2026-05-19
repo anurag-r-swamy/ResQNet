@@ -40,4 +40,10 @@
     <string name="connection_failed">Connection failed for %1$s (code: %2$s)</string>
     <string name="connection_failed_reason">Connection request failed for %1$s: %2$s</string>
     <string name="endpoint_lost">Endpoint lost: %1$s</string>
+    
+    <string name="nav_discovery">Discovery</string>
+    <string name="nav_chats">Chats</string>
+    <string name="active_chats">Active Chats</string>
+    <string name="no_chats_yet">No connected nodes yet.\nGo to Discovery to find neighbors.</string>
+    <string name="type_message_hint">Type a message...</string>
 </resources>
