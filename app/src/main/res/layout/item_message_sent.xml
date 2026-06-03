@@ -21,15 +21,34 @@
         app:layout_constraintWidth_max="280dp"
         app:strokeWidth="0dp">
 
-        <TextView
-            android:id="@+id/text_message"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingHorizontal="16dp"
-            android:paddingVertical="10dp"
-            android:text="Sent message text"
-            android:textAppearance="?attr/textAppearanceBodyLarge"
-            android:textColor="?attr/colorOnPrimary" />
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/text_message"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="16dp"
+                android:paddingTop="10dp"
+                android:paddingBottom="2dp"
+                android:text="Sent message text"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnPrimary" />
+
+            <TextView
+                android:id="@+id/text_timestamp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:paddingHorizontal="16dp"
+                android:paddingBottom="8dp"
+                android:text="10:00 AM"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="?attr/colorOnPrimary"
+                android:alpha="0.8" />
+        </LinearLayout>
 
     </com.google.android.material.card.MaterialCardView>
 

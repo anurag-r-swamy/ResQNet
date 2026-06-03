@@ -13,10 +13,55 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.List;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+
 public class DiscoveryFragment extends Fragment {
     private TextView statusText, nodeIdText;
     private NodeAdapter adapter;
     private List<String> discoveredNodes = new ArrayList<>();
+
+    private final BroadcastReceiver meshReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if ("com.example.myapplication.MESH_DATA_CHANGED".equals(intent.getAction())) {
+                MainActivity activity = (MainActivity) getActivity();
+                if (activity != null) {
+                    updateDiscoveredNodes(activity.getDiscoveredNodeNames());
+                    updateStatus(activity.getStatus());
+                }
+            }
+        }
+    };
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (getActivity() != null) {
+            IntentFilter filter = new IntentFilter("com.example.myapplication.MESH_DATA_CHANGED");
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                getActivity().registerReceiver(meshReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                getActivity().registerReceiver(meshReceiver, filter);
+            }
+        }
+        
+        MainActivity activity = (MainActivity) getActivity();
+        if (activity != null) {
+            updateDiscoveredNodes(activity.getDiscoveredNodeNames());
+            updateStatus(activity.getStatus());
+        }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        if (getActivity() != null) {
+            getActivity().unregisterReceiver(meshReceiver);
+        }
+    }
 
     @Nullable
     @Override
@@ -45,7 +90,7 @@ public class DiscoveryFragment extends Fragment {
 
         view.findViewById(R.id.btn_connect).setOnClickListener(v -> {
             if (getActivity() instanceof MainActivity) {
-                ((MainActivity) getActivity()).startNearby();
+                ((MainActivity) getActivity()).refreshNearby();
             }
         });
 

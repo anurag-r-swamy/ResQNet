@@ -15,6 +15,12 @@ public class MeshManager {
     private final List<String> discoveredNodes = new ArrayList<>();
     private final List<String> connectedNodes = new ArrayList<>();
     
+    public interface MessageListener {
+        void onMessageReceived(String nodeId, Message message);
+    }
+    
+    private final List<MessageListener> listeners = new ArrayList<>();
+    
     private MeshManager() {}
     
     public static synchronized MeshManager getInstance() {
@@ -23,33 +29,79 @@ public class MeshManager {
         }
         return instance;
     }
-    
-    public void addMessage(String nodeId, Message message) {
-        if (!chatHistory.containsKey(nodeId)) {
-            chatHistory.put(nodeId, new ArrayList<>());
+
+    public void addListener(MessageListener listener) {
+        synchronized (listeners) {
+            listeners.add(listener);
         }
-        chatHistory.get(nodeId).add(message);
     }
     
-    public List<Message> getMessages(String nodeId) {
-        return chatHistory.getOrDefault(nodeId, new ArrayList<>());
+    public void removeListener(MessageListener listener) {
+        synchronized (listeners) {
+            listeners.remove(listener);
+        }
+    }
+
+    public static String extractId(String nameOrId) {
+        if (nameOrId == null || nameOrId.isEmpty()) return nameOrId;
+        int lastParen = nameOrId.lastIndexOf('(');
+        int endParen = nameOrId.lastIndexOf(')');
+        if (lastParen != -1 && endParen > lastParen) {
+            return nameOrId.substring(lastParen + 1, endParen);
+        }
+        return nameOrId;
+    }
+    
+    public void addMessage(String nodeIdOrName, Message message) {
+        String nodeId = extractId(nodeIdOrName);
+        if (nodeId == null) return;
+        synchronized (chatHistory) {
+            List<Message> history = chatHistory.get(nodeId);
+            if (history == null) {
+                history = new ArrayList<>();
+                chatHistory.put(nodeId, history);
+            }
+            history.add(message);
+        }
+        
+        synchronized (listeners) {
+            for (MessageListener listener : listeners) {
+                listener.onMessageReceived(nodeId, message);
+            }
+        }
+    }
+    
+    public List<Message> getMessages(String nodeIdOrName) {
+        String nodeId = extractId(nodeIdOrName);
+        synchronized (chatHistory) {
+            List<Message> history = chatHistory.get(nodeId);
+            return history != null ? new ArrayList<>(history) : new ArrayList<>();
+        }
     }
     
     public void setDiscoveredNodes(List<String> nodes) {
-        this.discoveredNodes.clear();
-        this.discoveredNodes.addAll(nodes);
+        synchronized (discoveredNodes) {
+            this.discoveredNodes.clear();
+            this.discoveredNodes.addAll(nodes);
+        }
     }
     
     public List<String> getDiscoveredNodes() {
-        return new ArrayList<>(discoveredNodes);
+        synchronized (discoveredNodes) {
+            return new ArrayList<>(discoveredNodes);
+        }
     }
     
     public void setConnectedNodes(List<String> nodes) {
-        this.connectedNodes.clear();
-        this.connectedNodes.addAll(nodes);
+        synchronized (connectedNodes) {
+            this.connectedNodes.clear();
+            this.connectedNodes.addAll(nodes);
+        }
     }
     
     public List<String> getConnectedNodes() {
-        return new ArrayList<>(connectedNodes);
+        synchronized (connectedNodes) {
+            return new ArrayList<>(connectedNodes);
+        }
     }
 }

@@ -32,6 +32,16 @@ public class ChatActivity extends AppCompatActivity {
         return currentNodeId;
     }
 
+    private final MeshManager.MessageListener messageListener = new MeshManager.MessageListener() {
+        @Override
+        public void onMessageReceived(String nodeId, Message message) {
+            String targetId = MeshManager.extractId(targetNodeId);
+            if (nodeId.equals(targetId)) {
+                updateMessages(MeshManager.getInstance().getMessages(targetId));
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -55,18 +65,17 @@ public class ChatActivity extends AppCompatActivity {
         recyclerView.setLayoutManager(layoutManager);
         recyclerView.setAdapter(adapter);
 
-        MainActivity mainActivity = MainActivity.getInstance();
-        if (mainActivity != null) {
-            updateMessages(mainActivity.getMessagesForNode(targetNodeId));
-        }
+        MeshManager.getInstance().addListener(messageListener);
+        updateMessages(MeshManager.getInstance().getMessages(targetNodeId));
 
         EditText editMessage = findViewById(R.id.edit_message);
         findViewById(R.id.btn_send).setOnClickListener(v -> {
             String msgText = editMessage.getText().toString().trim();
+            MainActivity mainActivity = MainActivity.getInstance();
             if (!msgText.isEmpty() && mainActivity != null) {
                 mainActivity.sendMeshMessage(targetNodeId, msgText);
                 editMessage.setText("");
-                updateMessages(mainActivity.getMessagesForNode(targetNodeId));
+                // No need to update messages manually, listener will catch it
             }
         });
     }
@@ -88,6 +97,7 @@ public class ChatActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        MeshManager.getInstance().removeListener(messageListener);
         active = false;
         instance = null;
         currentNodeId = "";
