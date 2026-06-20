@@ -7,7 +7,7 @@ val meshSharedSecret = (project.findProperty("MESH_SHARED_SECRET") as String?)
 
 android {
     namespace = "com.example.myapplication"
-    compileSdk = 36
+    compileSdk = 35
 
     buildFeatures {
         buildConfig = true
@@ -45,6 +45,8 @@ dependencies {
     implementation(libs.activity)
     implementation(libs.constraintlayout)
     implementation(libs.play.services.nearby)
+    implementation(libs.play.services.location)
+    implementation(libs.osmdroid)
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)

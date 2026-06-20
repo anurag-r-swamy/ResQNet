@@ -1,10 +1,12 @@
 package com.example.myapplication;
 
 import android.os.Bundle;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
+import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
@@ -13,53 +15,19 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.List;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-
 public class DiscoveryFragment extends Fragment {
+    private static final String TAG = "DiscoveryFragment";
     private TextView statusText, nodeIdText;
     private NodeAdapter adapter;
     private List<String> discoveredNodes = new ArrayList<>();
 
-    private final BroadcastReceiver meshReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if ("com.example.myapplication.MESH_DATA_CHANGED".equals(intent.getAction())) {
-                MainActivity activity = (MainActivity) getActivity();
-                if (activity != null) {
-                    updateDiscoveredNodes(activity.getDiscoveredNodeNames());
-                    updateStatus(activity.getStatus());
-                }
-            }
-        }
-    };
-
     @Override
     public void onResume() {
         super.onResume();
-        if (getActivity() != null) {
-            IntentFilter filter = new IntentFilter("com.example.myapplication.MESH_DATA_CHANGED");
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                getActivity().registerReceiver(meshReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-            } else {
-                getActivity().registerReceiver(meshReceiver, filter);
-            }
-        }
-        
         MainActivity activity = (MainActivity) getActivity();
         if (activity != null) {
-            updateDiscoveredNodes(activity.getDiscoveredNodeNames());
+            updateDiscoveredNodes(activity.getAllMeshNodeNames());
             updateStatus(activity.getStatus());
-        }
-    }
-
-    @Override
-    public void onPause() {
-        super.onPause();
-        if (getActivity() != null) {
-            getActivity().unregisterReceiver(meshReceiver);
         }
     }
 
@@ -73,15 +41,21 @@ public class DiscoveryFragment extends Fragment {
         
         MainActivity activity = (MainActivity) getActivity();
         if (activity != null) {
-            nodeIdText.setText(getString(R.string.node_id_label, activity.getUserName()+activity.getMyShortId()));
+            String fullId = activity.getDisplayName();
+            nodeIdText.setText(getString(R.string.node_id_label, fullId));
             statusText.setText(activity.getStatus());
-            discoveredNodes = activity.getDiscoveredNodeNames();
+            discoveredNodes = activity.getAllMeshNodeNames();
         }
 
-        // In Discovery, tapping a node should initiate connection first.
-        adapter = new NodeAdapter(discoveredNodes, nodeId -> {
-            if (getActivity() instanceof MainActivity) {
-                ((MainActivity) getActivity()).connectToNodeByName(nodeId);
+        adapter = new NodeAdapter(discoveredNodes, nodeName -> {
+            MainActivity main = (MainActivity) getActivity();
+            if (main != null) {
+                // If it's a direct neighbor not yet connected, try connecting
+                if (!main.isNodeDirect(nodeName)) {
+                    main.connectToNodeByName(nodeName);
+                }
+                // Always open chat, mesh will handle the routing
+                main.openIndividualChat(nodeName);
             }
         });
         
@@ -109,8 +83,6 @@ public class DiscoveryFragment extends Fragment {
 
     public void updateDiscoveredNodes(List<String> nodes) {
         this.discoveredNodes = nodes;
-        if (adapter != null) {
-            adapter.updateData(nodes);
-        }
+        if (adapter != null) adapter.updateData(nodes);
     }
 }

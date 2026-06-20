@@ -9,6 +9,10 @@
         android:icon="@android:drawable/stat_notify_chat"
         android:title="Chats" />
     <item
+        android:id="@+id/nav_rescue"
+        android:icon="@android:drawable/ic_menu_mylocation"
+        android:title="Rescue" />
+    <item
         android:id="@+id/nav_settings"
         android:icon="@android:drawable/ic_menu_preferences"
         android:title="Settings" />

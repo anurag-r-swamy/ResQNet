@@ -1,5 +1,6 @@
 package com.example.myapplication;
 
+import android.graphics.Color;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -30,10 +31,22 @@ public class NodeAdapter extends RecyclerView.Adapter<NodeAdapter.ViewHolder> {
 
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-        String nodeId = nodes.get(position);
-        holder.nodeName.setText("Node " + nodeId);
-        // We can add logic here to differentiate discovery vs connected if needed
-        holder.itemView.setOnClickListener(v -> listener.onNodeClick(nodeId));
+        String nodeName = nodes.get(position);
+        holder.nodeName.setText(nodeName);
+        
+        MainActivity main = MainActivity.getInstance();
+        if (main != null) {
+            boolean isDirect = main.isNodeDirect(nodeName);
+            if (isDirect) {
+                holder.nodeStatus.setText("Directly Connected");
+                holder.nodeStatus.setTextColor(Color.parseColor("#4CAF50")); // Green
+            } else {
+                holder.nodeStatus.setText("Mesh (via peers)");
+                holder.nodeStatus.setTextColor(Color.parseColor("#FF9800")); // Orange
+            }
+        }
+        
+        holder.itemView.setOnClickListener(v -> listener.onNodeClick(nodeName));
     }
 
     @Override

@@ -1,6 +1,9 @@
 package com.example.myapplication;
 
 import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.Context;
@@ -18,6 +21,8 @@ import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -25,7 +30,6 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
 
 import com.google.android.material.bottomnavigation.BottomNavigationView;
-import com.google.android.gms.common.api.ApiException;
 import com.google.android.gms.nearby.Nearby;
 import com.google.android.gms.nearby.connection.AdvertisingOptions;
 import com.google.android.gms.nearby.connection.ConnectionInfo;
@@ -54,21 +58,31 @@ import java.util.concurrent.ConcurrentHashMap;
 import android.os.Handler;
 import android.os.Looper;
 
-import android.content.ComponentName;
-import android.content.ServiceConnection;
-import android.os.IBinder;
-
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MeshApp";
+    private static final String SERVICE_ID = "com.example.myapplication";
+    private static final Strategy STRATEGY = Strategy.P2P_CLUSTER;
+    private static final int MAX_SEEN_MESSAGE_IDS = 5000;
     public static final String PREFS_NAME = "ResQNetPrefs";
     public static final String KEY_USERNAME = "username";
+    private static final String CHANNEL_ID = "mesh_messages";
 
     private static MainActivity instance;
-    private MeshService meshService;
-    private boolean isBound = false;
 
     private String myShortId;
+    private String currentStatus = "Idle";
+    private boolean isEmergencyActive = false;
     
+    private final Set<String> connectedEndpoints = Collections.synchronizedSet(new HashSet<>());
+    private final Map<String, String> endpointIdToNodeMap = new ConcurrentHashMap<>();
+    private final Set<String> seenMessageIds = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final Set<String> pendingConnectionRequests = Collections.synchronizedSet(new HashSet<>());
+    private final Map<String, String> discoveredEndpointNames = new ConcurrentHashMap<>();
+    
+    private final Map<String, String> nodeIdToDisplayName = new ConcurrentHashMap<>();
+    private final Map<String, Long> meshNodeLastSeen = new ConcurrentHashMap<>();
+    private final Handler meshHandler = new Handler(Looper.getMainLooper());
+
     private final String[] REQUIRED_PERMISSIONS;
 
     {
@@ -89,25 +103,7 @@ public class MainActivity extends AppCompatActivity {
         REQUIRED_PERMISSIONS = permissions.toArray(new String[0]);
     }
 
-    private final ServiceConnection serviceConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            MeshService.MeshBinder binder = (MeshService.MeshBinder) service;
-            meshService = binder.getService();
-            isBound = true;
-            Log.d(TAG, "Service bound");
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            meshService = null;
-            isBound = false;
-        }
-    };
-
-    public static MainActivity getInstance() {
-        return instance;
-    }
+    public static MainActivity getInstance() { return instance; }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -116,6 +112,23 @@ public class MainActivity extends AppCompatActivity {
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
 
+        createNotificationChannel();
+
+        String androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+        if (androidId == null) androidId = UUID.randomUUID().toString();
+        myShortId = androidId.substring(Math.max(0, androidId.length() - 4)).toUpperCase();
+
+        setupUI();
+        startMeshHeartbeat();
+
+        if (!hasPermissions()) {
+            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, 1001);
+        } else {
+            startNearby();
+        }
+    }
+
+    private void setupUI() {
         View mainView = findViewById(R.id.main);
         if (mainView != null) {
             ViewCompat.setOnApplyWindowInsetsListener(mainView, (v, insets) -> {
@@ -125,21 +138,16 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
-        String androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-        if (androidId == null) androidId = UUID.randomUUID().toString();
-        myShortId = androidId.substring(Math.max(0, androidId.length() - 4)).toUpperCase();
-
         BottomNavigationView navView = findViewById(R.id.bottom_navigation);
         navView.setOnItemSelectedListener(item -> {
             Fragment selectedFragment = null;
             int id = item.getItemId();
-            if (id == R.id.nav_discovery) {
-                selectedFragment = new DiscoveryFragment();
-            } else if (id == R.id.nav_chats) {
-                selectedFragment = new ChatListFragment();
-            } else if (id == R.id.nav_settings) {
-                selectedFragment = new SettingsFragment();
-            }
+            if (id == R.id.nav_discovery) selectedFragment = new DiscoveryFragment();
+            else if (id == R.id.nav_chats) selectedFragment = new ChatListFragment();
+            else if (id == R.id.nav_rescue) {
+                startActivity(new Intent(this, RescueNavigationActivity.class));
+                return true;
+            } else if (id == R.id.nav_settings) selectedFragment = new SettingsFragment();
             
             if (selectedFragment != null) {
                 getSupportFragmentManager().beginTransaction()
@@ -151,110 +159,324 @@ public class MainActivity extends AppCompatActivity {
             return false;
         });
 
-        if (savedInstanceState == null) {
-            getSupportFragmentManager().beginTransaction()
-                    .replace(R.id.fragment_container, new DiscoveryFragment())
-                    .commit();
-        }
-
-        if (!hasPermissions()) {
-            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, 1001);
-        } else {
-            startMeshService();
+        if (getSupportFragmentManager().findFragmentById(R.id.fragment_container) == null) {
+            getSupportFragmentManager().beginTransaction().replace(R.id.fragment_container, new DiscoveryFragment()).commit();
         }
     }
 
-    private void startMeshService() {
-        Intent intent = new Intent(this, MeshService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
+    private void startMeshHeartbeat() {
+        meshHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                broadcastPresence();
+                cleanupOldNodes();
+                meshHandler.postDelayed(this, 30000);
+            }
+        }, 5000);
+    }
+
+    private void broadcastPresence() {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("type", "HELLO");
+            json.put("msgId", UUID.randomUUID().toString());
+            json.put("sender", getDisplayName());
+            json.put("target", "ALL");
+            broadcastToNeighbors(json.toString(), null);
+        } catch (Exception ignored) {}
+    }
+
+    private void cleanupOldNodes() {
+        long now = System.currentTimeMillis();
+        boolean changed = false;
+        for (String nodeId : new HashSet<>(meshNodeLastSeen.keySet())) {
+            if (now - meshNodeLastSeen.get(nodeId) > 120000) {
+                meshNodeLastSeen.remove(nodeId);
+                nodeIdToDisplayName.remove(nodeId);
+                changed = true;
+            }
         }
-        bindService(intent, serviceConnection, BIND_AUTO_CREATE);
+        if (changed) notifyFragmentsDataChanged();
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Mesh Messages", NotificationManager.IMPORTANCE_DEFAULT);
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) nm.createNotificationChannel(channel);
+        }
+    }
+
+    private void showNotification(String senderName, String messageText, String nodeId) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+        Intent intent = new Intent(this, ChatActivity.class);
+        intent.putExtra("node_id", nodeId);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pi = PendingIntent.getActivity(this, nodeId.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.status_dot).setContentTitle(senderName).setContentText(messageText)
+                .setContentIntent(pi).setAutoCancel(true);
+        NotificationManagerCompat.from(this).notify(nodeId.hashCode(), builder.build());
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (isBound) {
-            unbindService(serviceConnection);
-            isBound = false;
-        }
+        meshHandler.removeCallbacksAndMessages(null);
         if (instance == this) instance = null;
     }
 
     public String getMyShortId() { return myShortId; }
-
-    public String getUserName() {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_USERNAME, "User");
+    public String getUserName() { return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_USERNAME, "User"); }
+    public String getDisplayName() { 
+        if (isEmergencyActive) return "🆘 SOS " + myShortId;
+        return getUserName() + " (" + myShortId + ")"; 
     }
+    public String getStatus() { return currentStatus; }
 
-    public String getDisplayName() {
-        return getUserName() + " (" + myShortId + ")";
-    }
-
-    public String getStatus() { 
-        return isBound ? "Mesh Active" : "Starting..."; 
-    }
-
-    public List<String> getDiscoveredNodeNames() {
-        return isBound ? meshService.getDiscoveredNodeNames() : new ArrayList<>();
+    public List<String> getAllMeshNodeNames() {
+        List<String> names = new ArrayList<>();
+        for (String id : meshNodeLastSeen.keySet()) {
+            String name = nodeIdToDisplayName.get(id);
+            if (name != null) names.add(name);
+        }
+        for (String name : discoveredEndpointNames.values()) {
+            if (!names.contains(name)) names.add(name);
+        }
+        Collections.sort(names);
+        return names;
     }
 
     public List<String> getConnectedNodeNames() {
-        return isBound ? meshService.getConnectedNodeNames() : new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        synchronized (connectedEndpoints) {
+            for (String id : connectedEndpoints) {
+                String name = endpointIdToNodeMap.get(id);
+                if (name != null && !names.contains(name)) names.add(name);
+            }
+        }
+        return names;
+    }
+
+    public boolean isNodeDirect(String nodeIdOrName) {
+        String id = extractId(nodeIdOrName);
+        synchronized (connectedEndpoints) {
+            for (String eid : connectedEndpoints) {
+                if (extractId(endpointIdToNodeMap.get(eid)).equals(id)) return true;
+            }
+        }
+        return false;
     }
 
     public void connectToNodeByName(String nodeName) {
-        // In the new service-based model, we might want to automate connections
-        // or let the service handle it. For now, let's just toast.
-        Toast.makeText(this, "Automatic discovery & connection active", Toast.LENGTH_SHORT).show();
-    }
-
-    public List<Message> getMessagesForNode(String nodeIdOrName) {
-        return MeshManager.getInstance().getMessages(nodeIdOrName);
-    }
-
-    public void openIndividualChat(String nodeIdOrName) {
-        Intent intent = new Intent(this, ChatActivity.class);
-        intent.putExtra("node_id", nodeIdOrName);
-        startActivity(intent);
-        overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
-    }
-
-    public String getDisplayNameForNode(String nodeId) {
-        // This could be improved by keeping a mapping in MeshManager
-        return nodeId;
-    }
-
-    private boolean hasPermissions() {
-        for (String permission : REQUIRED_PERMISSIONS) {
-            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-                return false;
-            }
+        String endpointId = null;
+        for (Map.Entry<String, String> entry : discoveredEndpointNames.entrySet()) {
+            if (nodeName.equals(entry.getValue())) { endpointId = entry.getKey(); break; }
         }
-        return true;
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (hasPermissions()) {
-            startMeshService();
-        }
-    }
-
-    public void refreshNearby() {
-        if (isBound) meshService.startNearby();
+        if (endpointId == null || connectedEndpoints.contains(endpointId) || pendingConnectionRequests.contains(endpointId)) return;
+        final String targetId = endpointId;
+        pendingConnectionRequests.add(targetId);
+        Nearby.getConnectionsClient(this).requestConnection(getDisplayName(), targetId, connectionLifecycleCallback)
+                .addOnFailureListener(e -> pendingConnectionRequests.remove(targetId));
     }
 
     public void sendMeshMessage(String targetIdOrName, String message) {
-        if (!isBound) {
-            Toast.makeText(this, "Service not ready", Toast.LENGTH_SHORT).show();
-            return;
+        try {
+            String msgId = UUID.randomUUID().toString();
+            markMessageSeen(msgId);
+            String targetId = extractId(targetIdOrName);
+            JSONObject json = new JSONObject();
+            json.put("type", "MSG");
+            json.put("msgId", msgId);
+            json.put("sender", getDisplayName());
+            json.put("target", targetId);
+            String encryptedBody = CryptoUtils.encrypt(message);
+            if (encryptedBody == null) return;
+            json.put("body", encryptedBody);
+            broadcastToNeighbors(json.toString(), null);
+            addMessageToHistory(targetId, new Message(myShortId, message, true));
+            
+            // If it's a broadcast SOS, update local emergency state
+            if (targetId.equals("ALL") && message.contains("SOS")) {
+                setEmergencyMode(true);
+            }
+        } catch (Exception e) { Log.e(TAG, "Send error", e); }
+    }
+
+    public void setEmergencyMode(boolean active) {
+        if (this.isEmergencyActive != active) {
+            this.isEmergencyActive = active;
+            // Restart advertising with SOS in the name so OTHERS WITHOUT THE APP see it in Bluetooth list
+            startNearby();
         }
-        String targetId = MeshManager.extractId(targetIdOrName);
-        meshService.sendMeshMessage(targetId, message);
+    }
+
+    private void processReceivedData(String data, String fromEndpointId) {
+        try {
+            JSONObject json = new JSONObject(data);
+            String msgId = json.getString("msgId");
+            if (isMessageSeen(msgId)) return;
+            markMessageSeen(msgId);
+
+            String type = json.optString("type", "MSG");
+            String sender = json.getString("sender");
+            String senderId = extractId(sender);
+
+            meshNodeLastSeen.put(senderId, System.currentTimeMillis());
+            nodeIdToDisplayName.put(senderId, sender);
+
+            if (type.equals("MSG")) {
+                String target = json.getString("target");
+                String body = json.getString("body");
+                if (target.equals("ALL") || target.equalsIgnoreCase(myShortId)) {
+                    String clearText = CryptoUtils.decrypt(body);
+                    if (clearText != null) {
+                        addMessageToHistory(sender, new Message(senderId, clearText, false));
+                        // If we receive an SOS broadcast, it's public knowledge
+                        if (target.equals("ALL") && clearText.contains("SOS")) {
+                            Log.d(TAG, "Relaying SOS alert from " + sender);
+                        }
+                    }
+                }
+            }
+            
+            // RELAY: This is the core "hopping" logic. Every node that receives a new packet 
+            // re-broadcasts it to all its neighbors EXCEPT the one it got it from.
+            broadcastToNeighbors(data, fromEndpointId);
+            notifyFragmentsDataChanged();
+        } catch (Exception e) { Log.e(TAG, "Process error", e); }
+    }
+
+    private void addMessageToHistory(String nodeIdOrName, Message message) {
+        String nodeId = extractId(nodeIdOrName);
+        List<Message> history = MeshManager.getInstance().getMessages(nodeId);
+        MeshManager.getInstance().addMessage(nodeId, message);
+        
+        if (!message.isMe()) {
+            boolean isChatActive = ChatActivity.isActive() && nodeId.equalsIgnoreCase(extractId(ChatActivity.getCurrentNodeId()));
+            if (!isChatActive) showNotification(nodeIdToDisplayName.getOrDefault(nodeId, nodeId), message.getText(), nodeIdOrName);
+        }
+
+        runOnUiThread(() -> {
+            if (ChatActivity.isActive() && nodeId.equalsIgnoreCase(extractId(ChatActivity.getCurrentNodeId()))) {
+                ChatActivity activity = ChatActivity.getInstance();
+                if (activity != null) activity.updateMessages(MeshManager.getInstance().getMessages(nodeId));
+            }
+            notifyFragmentsDataChanged();
+        });
+    }
+
+    private void broadcastToNeighbors(String data, String excludeId) {
+        List<String> targets;
+        synchronized (connectedEndpoints) { targets = new ArrayList<>(connectedEndpoints); }
+        if (excludeId != null) targets.remove(excludeId);
+        if (!targets.isEmpty()) Nearby.getConnectionsClient(this).sendPayload(targets, Payload.fromBytes(data.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    public static String extractId(String nameOrId) {
+        if (nameOrId == null || nameOrId.isEmpty()) return nameOrId;
+        int lastParen = nameOrId.lastIndexOf('(');
+        int endParen = nameOrId.lastIndexOf(')');
+        if (lastParen != -1 && endParen > lastParen + 1) return nameOrId.substring(lastParen + 1, endParen);
+        return nameOrId;
+    }
+
+    private boolean hasPermissions() {
+        for (String p : REQUIRED_PERMISSIONS) if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) return false;
+        return true;
+    }
+
+    private void markMessageSeen(String id) {
+        synchronized (seenMessageIds) {
+            seenMessageIds.add(id);
+            if (seenMessageIds.size() > MAX_SEEN_MESSAGE_IDS) seenMessageIds.remove(seenMessageIds.iterator().next());
+        }
+    }
+
+    private boolean isMessageSeen(String id) { synchronized (seenMessageIds) { return seenMessageIds.contains(id); } }
+
+    public void startNearby() {
+        Nearby.getConnectionsClient(this).stopAdvertising();
+        Nearby.getConnectionsClient(this).stopDiscovery();
+        Nearby.getConnectionsClient(this).startAdvertising(getDisplayName(), SERVICE_ID, connectionLifecycleCallback, new AdvertisingOptions.Builder().setStrategy(STRATEGY).build())
+                .addOnSuccessListener(unused -> updateStatus("Active")).addOnFailureListener(e -> updateStatus("Adv Failed"));
+        Nearby.getConnectionsClient(this).startDiscovery(SERVICE_ID, endpointDiscoveryCallback, new DiscoveryOptions.Builder().setStrategy(STRATEGY).build());
+    }
+
+    public void refreshNearby() { stopNearby(); startNearby(); }
+
+    private void stopNearby() {
+        Nearby.getConnectionsClient(this).stopAllEndpoints();
+        Nearby.getConnectionsClient(this).stopAdvertising();
+        Nearby.getConnectionsClient(this).stopDiscovery();
+        connectedEndpoints.clear();
+        endpointIdToNodeMap.clear();
+        discoveredEndpointNames.clear();
+        updateStatus("Stopped");
+        notifyFragmentsDataChanged();
+    }
+
+    private final ConnectionLifecycleCallback connectionLifecycleCallback = new ConnectionLifecycleCallback() {
+        @Override
+        public void onConnectionInitiated(@NonNull String eid, @NonNull ConnectionInfo info) {
+            endpointIdToNodeMap.put(eid, info.getEndpointName());
+            Nearby.getConnectionsClient(MainActivity.this).acceptConnection(eid, payloadCallback);
+        }
+        @Override
+        public void onConnectionResult(@NonNull String eid, @NonNull ConnectionResolution res) {
+            if (res.getStatus().isSuccess()) { connectedEndpoints.add(eid); notifyFragmentsDataChanged(); }
+        }
+        @Override
+        public void onDisconnected(@NonNull String eid) {
+            connectedEndpoints.remove(eid);
+            endpointIdToNodeMap.remove(eid);
+            notifyFragmentsDataChanged();
+        }
+    };
+
+    private final EndpointDiscoveryCallback endpointDiscoveryCallback = new EndpointDiscoveryCallback() {
+        @Override
+        public void onEndpointFound(@NonNull String eid, @NonNull DiscoveredEndpointInfo info) {
+            String name = info.getEndpointName();
+            if (name == null || name.equalsIgnoreCase(getDisplayName())) return;
+            discoveredEndpointNames.put(eid, name);
+            if (!connectedEndpoints.contains(eid) && !pendingConnectionRequests.contains(eid)) {
+                pendingConnectionRequests.add(eid);
+                Nearby.getConnectionsClient(MainActivity.this).requestConnection(getDisplayName(), eid, connectionLifecycleCallback)
+                        .addOnFailureListener(e -> pendingConnectionRequests.remove(eid));
+            }
+            notifyFragmentsDataChanged();
+        }
+        @Override
+        public void onEndpointLost(@NonNull String eid) {
+            discoveredEndpointNames.remove(eid);
+            notifyFragmentsDataChanged();
+        }
+    };
+
+    private final PayloadCallback payloadCallback = new PayloadCallback() {
+        @Override
+        public void onPayloadReceived(@NonNull String eid, @NonNull Payload p) {
+            if (p.getType() == Payload.Type.BYTES && p.asBytes() != null) processReceivedData(new String(p.asBytes(), StandardCharsets.UTF_8), eid);
+        }
+        @Override
+        public void onPayloadTransferUpdate(@NonNull String eid, @NonNull PayloadTransferUpdate u) {}
+    };
+
+    private void updateStatus(String status) {
+        currentStatus = status;
+        runOnUiThread(() -> {
+            Fragment f = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
+            if (f instanceof DiscoveryFragment) ((DiscoveryFragment) f).updateStatus(status);
+        });
+    }
+
+    private void notifyFragmentsDataChanged() {
+        runOnUiThread(() -> {
+            Fragment f = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
+            List<String> nodes = getAllMeshNodeNames();
+            if (f instanceof DiscoveryFragment) ((DiscoveryFragment) f).updateDiscoveredNodes(nodes);
+            else if (f instanceof ChatListFragment) ((ChatListFragment) f).updateConnectedNodes(nodes);
+        });
     }
 }

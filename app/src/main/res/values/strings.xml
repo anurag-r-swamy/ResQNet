@@ -18,7 +18,8 @@
     <string name="node_name_placeholder">Node ID</string>
     <string name="node_status_tap_to_connect">Tap to connect</string>
     <string name="nearby_mesh_label">Nearby ResQNet Nodes</string>
-    
+    <string name="locate_me_description">Locate my position</string>
+
     <!-- Legacy strings for logic compatibility if any -->
     <string name="status_stopped">Status: Stopped</string>
 </resources>
