@@ -268,6 +268,14 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
+    public void openIndividualChat(String nodeIdOrName) {
+        Intent intent = new Intent(this, ChatActivity.class);
+        intent.putExtra("node_id", nodeIdOrName);
+        startActivity(intent);
+        // Using common transition animations
+        overridePendingTransition(android.R.anim.slide_in_left, android.R.anim.slide_out_right);
+    }
+
     public void connectToNodeByName(String nodeName) {
         String endpointId = null;
         for (Map.Entry<String, String> entry : discoveredEndpointNames.entrySet()) {
@@ -296,7 +304,6 @@ public class MainActivity extends AppCompatActivity {
             broadcastToNeighbors(json.toString(), null);
             addMessageToHistory(targetId, new Message(myShortId, message, true));
             
-            // If it's a broadcast SOS, update local emergency state
             if (targetId.equals("ALL") && message.contains("SOS")) {
                 setEmergencyMode(true);
             }
@@ -306,7 +313,6 @@ public class MainActivity extends AppCompatActivity {
     public void setEmergencyMode(boolean active) {
         if (this.isEmergencyActive != active) {
             this.isEmergencyActive = active;
-            // Restart advertising with SOS in the name so OTHERS WITHOUT THE APP see it in Bluetooth list
             startNearby();
         }
     }
@@ -332,16 +338,10 @@ public class MainActivity extends AppCompatActivity {
                     String clearText = CryptoUtils.decrypt(body);
                     if (clearText != null) {
                         addMessageToHistory(sender, new Message(senderId, clearText, false));
-                        // If we receive an SOS broadcast, it's public knowledge
-                        if (target.equals("ALL") && clearText.contains("SOS")) {
-                            Log.d(TAG, "Relaying SOS alert from " + sender);
-                        }
                     }
                 }
             }
             
-            // RELAY: This is the core "hopping" logic. Every node that receives a new packet 
-            // re-broadcasts it to all its neighbors EXCEPT the one it got it from.
             broadcastToNeighbors(data, fromEndpointId);
             notifyFragmentsDataChanged();
         } catch (Exception e) { Log.e(TAG, "Process error", e); }
@@ -349,7 +349,6 @@ public class MainActivity extends AppCompatActivity {
 
     private void addMessageToHistory(String nodeIdOrName, Message message) {
         String nodeId = extractId(nodeIdOrName);
-        List<Message> history = MeshManager.getInstance().getMessages(nodeId);
         MeshManager.getInstance().addMessage(nodeId, message);
         
         if (!message.isMe()) {

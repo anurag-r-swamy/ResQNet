@@ -1,12 +1,10 @@
 package com.example.myapplication;
 
 import android.os.Bundle;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
-import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
@@ -16,18 +14,25 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class DiscoveryFragment extends Fragment {
-    private static final String TAG = "DiscoveryFragment";
-    private TextView statusText, nodeIdText;
+    private TextView statusText;
+    private TextView nodeIdText;
     private NodeAdapter adapter;
     private List<String> discoveredNodes = new ArrayList<>();
 
     @Override
     public void onResume() {
         super.onResume();
-        MainActivity activity = (MainActivity) getActivity();
+        refreshUI();
+    }
+
+    private void refreshUI() {
+        MainActivity activity = MainActivity.getInstance();
         if (activity != null) {
             updateDiscoveredNodes(activity.getAllMeshNodeNames());
             updateStatus(activity.getStatus());
+            if (nodeIdText != null) {
+                nodeIdText.setText(getString(R.string.node_id_label, activity.getDisplayName()));
+            }
         }
     }
 
@@ -39,22 +44,20 @@ public class DiscoveryFragment extends Fragment {
         nodeIdText = view.findViewById(R.id.node_id_text);
         RecyclerView recyclerView = view.findViewById(R.id.discovery_recycler);
         
-        MainActivity activity = (MainActivity) getActivity();
-        if (activity != null) {
-            String fullId = activity.getDisplayName();
-            nodeIdText.setText(getString(R.string.node_id_label, fullId));
-            statusText.setText(activity.getStatus());
-            discoveredNodes = activity.getAllMeshNodeNames();
-        }
-
         adapter = new NodeAdapter(discoveredNodes, nodeName -> {
-            MainActivity main = (MainActivity) getActivity();
+            MainActivity main = MainActivity.getInstance();
             if (main != null) {
-                // If it's a direct neighbor not yet connected, try connecting
+                // Multi-hop Mesh logic:
+                // We only try to establish a direct Bluetooth connection if the node is within physical range
+                // and not already connected. Otherwise, we just open the chat and the mesh routing 
+                // in MainActivity will handle relaying the messages through other peers automatically.
                 if (!main.isNodeDirect(nodeName)) {
+                    // Try to connect only if it's a direct neighbor we've seen in scans
+                    // main.connectToNodeByName will internally check if the node is in range.
                     main.connectToNodeByName(nodeName);
                 }
-                // Always open chat, mesh will handle the routing
+                
+                // Open individual chat activity
                 main.openIndividualChat(nodeName);
             }
         });
@@ -62,27 +65,36 @@ public class DiscoveryFragment extends Fragment {
         recyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
         recyclerView.setAdapter(adapter);
 
-        view.findViewById(R.id.btn_connect).setOnClickListener(v -> {
-            if (getActivity() instanceof MainActivity) {
-                ((MainActivity) getActivity()).refreshNearby();
-            }
-        });
+        View btnRefresh = view.findViewById(R.id.btn_refresh);
+        if (btnRefresh != null) {
+            btnRefresh.setOnClickListener(v -> {
+                MainActivity main = MainActivity.getInstance();
+                if (main != null) main.refreshNearby();
+            });
+        }
 
-        view.findViewById(R.id.btn_refresh).setOnClickListener(v -> {
-            if (getActivity() instanceof MainActivity) {
-                ((MainActivity) getActivity()).refreshNearby();
-            }
-        });
+        View btnConnect = view.findViewById(R.id.btn_connect);
+        if (btnConnect != null) {
+            btnConnect.setOnClickListener(v -> {
+                MainActivity main = MainActivity.getInstance();
+                if (main != null) main.refreshNearby();
+            });
+        }
 
+        refreshUI();
         return view;
     }
 
     public void updateStatus(String status) {
-        if (statusText != null) statusText.setText(status);
+        if (statusText != null) {
+            statusText.setText(status);
+        }
     }
 
     public void updateDiscoveredNodes(List<String> nodes) {
         this.discoveredNodes = nodes;
-        if (adapter != null) adapter.updateData(nodes);
+        if (adapter != null) {
+            adapter.updateData(nodes);
+        }
     }
 }
